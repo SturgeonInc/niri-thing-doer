@@ -1,0 +1,19 @@
+[package]
+name = "niri-thing-doer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.54", features = ["derive"] }
+knuffel = "3.2.0"
+# this is NOT the newest version of miette but it is the one that works with knuffel :|
+miette = { version = "5.10.0", features = ["fancy-no-backtrace"] }
+niri-ipc = "25.11.0"
+regex = "1.12.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "z"  # Optimize aggressively for size
+strip = true     # Remove debug symbols
+panic = "abort"  # Smaller panic implementation
