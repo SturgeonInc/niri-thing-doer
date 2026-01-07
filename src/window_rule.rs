@@ -8,7 +8,7 @@ use crate::kdl_utils::RegexEq;
 #[derive(knuffel::Decode)]
 pub struct WindowRules {
     #[knuffel(children)]
-    windowrules: Vec<WindowRule>,
+    pub windowrules: Vec<WindowRule>,
 }
 
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
@@ -78,6 +78,8 @@ pub struct WindowRule {
     // pub scroll_factor: Option<FloatOrInt<0, 100>>,
     #[knuffel(child, unwrap(argument))]
     pub tiled_state: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub command: Option<String>,
 }
 
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
