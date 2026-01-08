@@ -2,8 +2,7 @@ mod kdl_utils;
 mod window_rule;
 
 use std::collections::HashSet;
-use std::io::empty;
-use std::{default, fs};
+use std::fs;
 
 use clap::Parser;
 use miette::{Context, IntoDiagnostic};
@@ -28,7 +27,10 @@ fn main() -> miette::Result<()> {
     let mut listening_socket = Socket::connect().into_diagnostic()?;
     let mut sending_socket = Socket::connect().into_diagnostic()?;
     // TODO: HashSet should probably be on both WindowId and RuleId!!!
-    let mut matched_windows: HashSet<WindowId> = HashSet::new();
+    let mut matched_windows: Vec<HashSet<WindowId>> = Vec::with_capacity(windowrules.len());
+    for _ in &windowrules {
+        matched_windows.push(HashSet::new());
+    }
 
     listening_socket
         .send(Request::EventStream)
@@ -62,7 +64,7 @@ fn main() -> miette::Result<()> {
                     &mut sending_socket,
                 )?;
             }
-            Event::WindowClosed { id } => drop(matched_windows.remove(&id)),
+            Event::WindowClosed { id } => drop(matched_windows.iter_mut().map(|x| x.remove(&id))),
             _ => (),
         }
     }
@@ -80,18 +82,15 @@ fn parse_config(path: &str) -> miette::Result<WindowRules> {
 fn handle_window(
     window: Window,
     windowrules: &Vec<WindowRule>,
-    matched_windows: &mut HashSet<WindowId>,
+    matched_windows: &mut Vec<HashSet<WindowId>>,
     socket: &mut Socket,
 ) -> miette::Result<()> {
-    let windowrules = rules_that_apply(&window, windowrules);
-    if windowrules.is_empty() {
-        return Ok(());
-    }
+    let rules_that_apply = rules_that_apply(&window, windowrules);
 
-    matched_windows.insert(window.id);
-
-    for wr in windowrules {
-        take_windowrule_actions(&window, &wr, socket)?;
+    for (rule_idx, wr) in rules_that_apply {
+        if matched_windows[rule_idx].insert(window.id) {
+            take_windowrule_actions(&window, &wr, socket)?;
+        }
     }
 
     return Ok(());
@@ -144,13 +143,16 @@ fn take_windowrule_actions(
     return Ok(());
 }
 
-fn rules_that_apply<'a>(window: &Window, windowrules: &'a Vec<WindowRule>) -> Vec<&'a WindowRule> {
+fn rules_that_apply<'a>(
+    window: &Window,
+    windowrules: &'a Vec<WindowRule>,
+) -> Vec<(usize, &'a WindowRule)> {
     windowrules
         .iter()
-        .filter(|wr| rule_applies(window, wr))
+        .enumerate()
+        .filter(|(_, wr)| rule_applies(window, wr))
         .collect()
 }
-
 
 fn rule_applies(window: &Window, wr: &WindowRule) -> bool {
     // probably niri has code for this that I should poach
