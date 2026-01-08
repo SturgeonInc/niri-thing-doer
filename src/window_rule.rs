@@ -1,8 +1,9 @@
-use niri_ipc::{ColumnDisplay, Window};
+use niri_ipc::{ColumnDisplay, Window, SizeChange};
+use knuffel::errors::DecodeError;
 
 // use crate::appearance::{BlockOutFrom, BorderRule, CornerRadius, ShadowRule, TabIndicatorRule};
 // use crate::layout::DefaultPresetSize;
-use crate::kdl_utils::RegexEq;
+use crate::kdl_utils::{DefaultPresetSize, PresetSize, RegexEq};
 // use crate::FloatOrInt;
 
 #[derive(knuffel::Decode)]
@@ -19,10 +20,10 @@ pub struct WindowRule {
     pub excludes: Vec<Match>,
 
     // Rules applied at initial configure.
-    // #[knuffel(child)]
-    // pub default_column_width: Option<DefaultPresetSize>,
-    // #[knuffel(child)]
-    // pub default_window_height: Option<DefaultPresetSize>,
+    #[knuffel(child)]
+    pub default_column_width: Option<DefaultPresetSize>,
+    #[knuffel(child)]
+    pub default_window_height: Option<DefaultPresetSize>,
     #[knuffel(child, unwrap(argument))]
     pub open_on_output: Option<String>,
     #[knuffel(child, unwrap(argument))]

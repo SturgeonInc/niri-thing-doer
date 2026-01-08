@@ -11,6 +11,8 @@ use niri_ipc::{Action, Event, Request, Response, Window};
 
 use window_rule::{Match, WindowRule, WindowRules};
 
+use crate::kdl_utils::DefaultPresetSize;
+
 type WindowId = u64;
 
 #[derive(Parser)]
@@ -41,7 +43,7 @@ fn main() -> miette::Result<()> {
                 format!("Expected niri to provide either a 'Handled' signal or an error in response to an EventStream request, instead got {code:?}")
             ),
         })
-        .unwrap();
+        .unwrap(); //TODO replace with Miette bullshit
 
     let mut read_event = listening_socket.read_events();
     while let Ok(event) = read_event() {
@@ -91,53 +93,6 @@ fn handle_window(
         if matched_windows[rule_idx].insert(window.id) {
             take_windowrule_actions(&window, &wr, socket)?;
         }
-    }
-
-    return Ok(());
-}
-
-fn take_windowrule_actions(
-    window: &Window,
-    windowrule: &WindowRule,
-    socket: &mut Socket,
-) -> miette::Result<()> {
-    // presumably these should also return a Handled like an EventStream
-    // request but the documentation doesn't specify so I don't either
-    match windowrule.open_floating {
-        None => (),
-        Some(true) => {
-            let _ = socket
-                .send(Request::Action(Action::MoveWindowToFloating {
-                    id: Some(window.id),
-                }))
-                .into_diagnostic()?;
-        }
-        Some(false) => {
-            let _ = socket
-                .send(Request::Action(Action::MoveWindowToTiling {
-                    id: Some(window.id),
-                }))
-                .into_diagnostic()?;
-        }
-    }
-
-    if let Some(command) = &windowrule.spawn_sh {
-        let id = window.id.to_string();
-        let title = window.title.as_deref().unwrap_or_default();
-        let app_id = window.app_id.as_deref().unwrap_or_default();
-        let pid = match window.pid {
-            None => "''".to_string(),
-            Some(pid) => pid.to_string(),
-        };
-        let command = command
-            .to_string()
-            .replace("{id}", &id)
-            .replace("{title}", title)
-            .replace("{app_id}", app_id)
-            .replace("{pid}", &pid);
-        let _ = socket
-            .send(Request::Action(Action::SpawnSh { command }))
-            .into_diagnostic()?;
     }
 
     return Ok(());
@@ -195,4 +150,70 @@ fn window_matches(window: &Window, m: &Match) -> bool {
         None => true,
     };
     matches_app_id && matches_title && matches_focused && matches_urgent && matches_floating
+}
+
+fn take_windowrule_actions(
+    window: &Window,
+    windowrule: &WindowRule,
+    socket: &mut Socket,
+) -> miette::Result<()> {
+    // presumably these should also return a Handled like an EventStream
+    // request but the documentation doesn't specify so I don't either
+    // NOTE: Should happen first before other rules apply, I think
+    if let Some(open_floating) = windowrule.open_floating {
+        let _ = socket
+            .send(Request::Action(match open_floating {
+                true => Action::MoveWindowToFloating {
+                    id: Some(window.id),
+                },
+                false => Action::MoveWindowToTiling {
+                    id: Some(window.id),
+                },
+            }))
+            .into_diagnostic()?;
+    }
+
+    if let Some(DefaultPresetSize { 0: Some(change) }) = windowrule.default_window_height {
+        let _ = socket
+            .send(Request::Action(Action::SetWindowHeight {
+                id: Some(window.id),
+                change: change.into(),
+            }))
+            .into_diagnostic()?;
+    }
+
+    if let Some(DefaultPresetSize { 0: Some(change) }) = windowrule.default_column_width {
+        let _ = socket
+            .send(Request::Action(Action::SetWindowWidth {
+                id: Some(window.id),
+                change: change.into(),
+            }))
+            .into_diagnostic()?;
+    }
+
+    // TODO: why is niri not finishing these actions before the command?
+    //       the socket is meant to be blocking isn't it?
+
+
+    // NOTE: Should occur last
+    if let Some(command) = &windowrule.spawn_sh {
+        let id = window.id.to_string();
+        let title = window.title.as_deref().unwrap_or_default();
+        let app_id = window.app_id.as_deref().unwrap_or_default();
+        let pid = match window.pid {
+            None => "".to_string(),
+            Some(pid) => pid.to_string(),
+        };
+        let command = command
+            .to_string()
+            .replace("{id}", &id)
+            .replace("{title}", title)
+            .replace("{app_id}", app_id)
+            .replace("{pid}", &pid);
+        let _ = socket
+            .send(Request::Action(Action::SpawnSh { command }))
+            .into_diagnostic()?;
+    }
+
+    return Ok(());
 }

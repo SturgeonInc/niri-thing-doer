@@ -3,6 +3,7 @@ use std::str::FromStr;
 use knuffel::errors::DecodeError;
 use miette::miette;
 use regex::Regex;
+use niri_ipc::SizeChange;
 
 // mod merge_with;
 // pub use merge_with::*;
@@ -138,6 +139,35 @@ impl<S: knuffel::traits::ErrorSpan, const MIN: i32, const MAX: i32> knuffel::Dec
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DefaultPresetSize(pub Option<PresetSize>);
+
+impl<S> knuffel::Decode<S> for DefaultPresetSize
+where
+    S: knuffel::traits::ErrorSpan,
+{
+    fn decode_node(
+        node: &knuffel::ast::SpannedNode<S>,
+        ctx: &mut knuffel::decode::Context<S>,
+    ) -> Result<Self, DecodeError<S>> {
+        expect_only_children(node, ctx);
+
+        let mut children = node.children();
+
+        if let Some(child) = children.next() {
+            if let Some(unwanted_child) = children.next() {
+                ctx.emit_error(DecodeError::unexpected(
+                    unwanted_child,
+                    "node",
+                    "expected no more than one child",
+                ));
+            }
+            PresetSize::decode_node(child, ctx).map(Some).map(Self)
+        } else {
+            Ok(Self(None))
+        }
+    }
+}
 pub fn expect_only_children<S>(
     node: &knuffel::ast::SpannedNode<S>,
     ctx: &mut knuffel::decode::Context<S>,
@@ -204,4 +234,21 @@ pub fn parse_arg_node<S: knuffel::traits::ErrorSpan, T: knuffel::traits::DecodeS
     }
 
     Ok(value)
+}
+
+
+
+#[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
+pub enum PresetSize {
+    Proportion(#[knuffel(argument)] f64),
+    Fixed(#[knuffel(argument)] i32),
+}
+
+impl From<PresetSize> for SizeChange {
+    fn from(value: PresetSize) -> Self {
+        match value {
+            PresetSize::Proportion(prop) => SizeChange::SetProportion(prop * 100.),
+            PresetSize::Fixed(fixed) => SizeChange::SetFixed(fixed),
+        }
+    }
 }
