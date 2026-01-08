@@ -79,7 +79,7 @@ pub struct WindowRule {
     #[knuffel(child, unwrap(argument))]
     pub tiled_state: Option<bool>,
     #[knuffel(child, unwrap(argument))]
-    pub command: Option<String>,
+    pub spawn_sh: Option<String>,
 }
 
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
