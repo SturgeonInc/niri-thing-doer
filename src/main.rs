@@ -2,7 +2,8 @@ mod kdl_utils;
 mod window_rule;
 
 use std::collections::HashSet;
-use std::fs;
+use std::convert::identity;
+use std::{env, fs};
 
 use clap::Parser;
 use miette::{Context, IntoDiagnostic};
@@ -18,32 +19,33 @@ type WindowId = u64;
 #[derive(Parser)]
 #[command(about = "Limited generic niri event handler?", long_about = None)]
 struct Cli {
-    #[arg(short, long, value_name = "FILE", default_value = "rules.kdl")]
-    rules: String,
+    #[arg(short, long, value_name = "FILE")]
+    rules: Option<String>,
 }
 
 fn main() -> miette::Result<()> {
     let cli = Cli::parse();
-    let windowrules = parse_config(&cli.rules)?.windowrules;
+    let rules = match cli.rules {
+        Some(rules) => rules,
+        None => {
+            let conf_home = env::var("XDG_DATA_HOME")
+                .unwrap_or(env::var("HOME")
+                .map_err(|_| miette::miette!(
+                    // help = "try specifying rule file path with --rules",
+                    "environment variable $HOME not found, no default rule file path could be used"))? + "/.config");
+            conf_home + "/niri/dyn_rules.kdl"
+        }
+    };
+    let windowrules = parse_config(&rules)?.windowrules;
 
     let mut listening_socket = Socket::connect().into_diagnostic()?;
     let mut sending_socket = Socket::connect().into_diagnostic()?;
-    // TODO: HashSet should probably be on both WindowId and RuleId!!!
     let mut matched_windows: Vec<HashSet<WindowId>> = Vec::with_capacity(windowrules.len());
     for _ in &windowrules {
         matched_windows.push(HashSet::new());
     }
 
-    listening_socket
-        .send(Request::EventStream)
-        .into_diagnostic()?
-        .and_then(|r| match r {
-            Response::Handled => Ok(()),
-            code => Err(
-                format!("Expected niri to provide either a 'Handled' signal or an error in response to an EventStream request, instead got {code:?}")
-            ),
-        })
-        .unwrap(); //TODO replace with Miette bullshit
+    handle_send(Request::EventStream, &mut listening_socket)?;
 
     let mut read_event = listening_socket.read_events();
     while let Ok(event) = read_event() {
@@ -83,24 +85,24 @@ fn parse_config(path: &str) -> miette::Result<WindowRules> {
 
 fn handle_window(
     window: Window,
-    windowrules: &Vec<WindowRule>,
-    matched_windows: &mut Vec<HashSet<WindowId>>,
+    windowrules: &[WindowRule],
+    matched_windows: &mut [HashSet<WindowId>],
     socket: &mut Socket,
 ) -> miette::Result<()> {
     let rules_that_apply = rules_that_apply(&window, windowrules);
 
     for (rule_idx, wr) in rules_that_apply {
         if matched_windows[rule_idx].insert(window.id) {
-            take_windowrule_actions(&window, &wr, socket)?;
+            take_windowrule_actions(&window, wr, socket)?;
         }
     }
 
-    return Ok(());
+    Ok(())
 }
 
 fn rules_that_apply<'a>(
     window: &Window,
-    windowrules: &'a Vec<WindowRule>,
+    windowrules: &'a [WindowRule],
 ) -> Vec<(usize, &'a WindowRule)> {
     windowrules
         .iter()
@@ -123,33 +125,35 @@ fn rule_applies(window: &Window, wr: &WindowRule) -> bool {
 }
 
 fn window_matches(window: &Window, m: &Match) -> bool {
-    let title = window.title.as_deref().unwrap_or("");
-    let matches_title = match &m.title {
-        Some(x) => x.0.is_match(title),
-        None => true,
-    };
-
-    let app_id = window.app_id.as_deref().unwrap_or("");
-    let matches_app_id = match &m.app_id {
-        Some(x) => x.0.is_match(app_id),
-        None => true,
-    };
-
     // This is more complicated, I'd need to check the workspace and shit
     // Missing: active, active in column, is screencast target, on startup
-    let matches_focused = match m.is_focused {
-        Some(x) => x == window.is_focused,
-        None => true,
-    };
-    let matches_urgent = match m.is_urgent {
-        Some(x) => x == window.is_urgent,
-        None => true,
-    };
-    let matches_floating = match m.is_floating {
-        Some(x) => x == window.is_floating,
-        None => true,
-    };
-    matches_app_id && matches_title && matches_focused && matches_urgent && matches_floating
+    let regex_rules = [(&m.app_id, &window.app_id), (&m.title, &window.title)]
+        .iter()
+        .filter_map(|(m, w)| {
+            let m = &m.as_ref()?.0;
+            let w = w.as_deref().unwrap_or_default();
+            Some(m.is_match(w))
+        })
+        .all(identity);
+
+    let state_rules = [m.is_urgent, m.is_floating, m.is_focused]
+        .into_iter()
+        .flatten() // a clippy suggestion down from .filter_map(identity)
+        .all(identity);
+
+    regex_rules && state_rules
+}
+
+fn handle_send(req: Request, socket: &mut Socket) -> miette::Result<()> {
+    socket.send(req.clone()).into_diagnostic()?
+    .and_then(|r| match r {
+        Response::Handled => Ok(()),
+        code => Err(
+            format!("Expected niri to provide either a 'Handled' signal or an error in response to an {req:#?} request, instead got {code:#?}")
+        ),
+    })
+    .map_err(|issue| miette::miette!(issue))?;
+    Ok(())
 }
 
 fn take_windowrule_actions(
@@ -161,39 +165,41 @@ fn take_windowrule_actions(
     // request but the documentation doesn't specify so I don't either
     // NOTE: Should happen first before other rules apply, I think
     if let Some(open_floating) = windowrule.open_floating {
-        let _ = socket
-            .send(Request::Action(match open_floating {
+        handle_send(
+            Request::Action(match open_floating {
                 true => Action::MoveWindowToFloating {
                     id: Some(window.id),
                 },
                 false => Action::MoveWindowToTiling {
                     id: Some(window.id),
                 },
-            }))
-            .into_diagnostic()?;
+            }),
+            socket,
+        )?;
     }
 
     if let Some(DefaultPresetSize { 0: Some(change) }) = windowrule.default_window_height {
-        let _ = socket
-            .send(Request::Action(Action::SetWindowHeight {
+        handle_send(
+            Request::Action(Action::SetWindowHeight {
                 id: Some(window.id),
                 change: change.into(),
-            }))
-            .into_diagnostic()?;
+            }),
+            socket,
+        )?;
     }
 
     if let Some(DefaultPresetSize { 0: Some(change) }) = windowrule.default_column_width {
-        let _ = socket
-            .send(Request::Action(Action::SetWindowWidth {
+        handle_send(
+            Request::Action(Action::SetWindowWidth {
                 id: Some(window.id),
                 change: change.into(),
-            }))
-            .into_diagnostic()?;
+            }),
+            socket,
+        )?;
     }
 
     // TODO: why is niri not finishing these actions before the command?
     //       the socket is meant to be blocking isn't it?
-
 
     // NOTE: Should occur last
     if let Some(command) = &windowrule.spawn_sh {
@@ -215,5 +221,5 @@ fn take_windowrule_actions(
             .into_diagnostic()?;
     }
 
-    return Ok(());
+    Ok(())
 }
